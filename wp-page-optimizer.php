@@ -2,7 +2,7 @@
 /**
  * Nazwa Wtyczki: Page Optimizer Pro
  * Opis: Optymalizuje wydajność WordPress + AI + SEO + Naprawy + Integracje
- * Wersja: 2.0.0
+ * Wersja: 2.1.0
  * Autor: Norbert Siedlecki
  * Licencja: GPL v2 lub nowsza
  * URI wtyczki: https://github.com/norbertsiedlecki-prog/wp-page-optimizer
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 
 define('WPO_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPO_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('WPO_VERSION', '2.0.0');
+define('WPO_VERSION', '2.1.0');
 
 // Załaduj pliki modułów
 require_once WPO_PLUGIN_DIR . 'includes/ai-integration.php';
@@ -96,7 +96,7 @@ function wpo_render_settings_page() {
     $cache_time = get_option('wpo_cache_time', 3600);
     ?>
     <div class="wrap">
-        <h1>🚀 Page Optimizer Pro v2.0</h1>
+        <h1>🚀 Page Optimizer Pro v2.1</h1>
         <p style="font-size: 16px; color: #666;">Kompleksowa optymalizacja WordPress + AI + SEO</p>
         
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin: 30px 0;">
@@ -312,7 +312,7 @@ function wpo_render_ai_page() {
                     <th scope="row"><label for="wpo_ai_seo_optimize">🔍 Optymalizacja SEO</label></th>
                     <td>
                         <input type="checkbox" name="wpo_ai_seo_optimize" id="wpo_ai_seo_optimize" value="1" <?php checked($ai_seo_optimize); ?> />
-                        <p class="description">AI optymalizuje treści dla SEO</p>
+                        <p class="description">AI optymalizuje treści dla SEO (asynchronicznie)</p>
                     </td>
                 </tr>
             </table>
@@ -347,17 +347,13 @@ function wpo_render_repair_page() {
         switch ($action) {
             case 'cleanup_db':
                 // Czyszczenie bazy danych
-                global $wpdb;
-                $wpdb->query("DELETE FROM {$wpdb->postmeta} WHERE meta_key LIKE '%_edit_lock'");
-                $wpdb->query("DELETE FROM {$wpdb->postmeta} WHERE meta_key LIKE '%_edit_last'");
+                wpo_remove_orphaned_postmeta();
                 $repair_message = '✅ Baza danych wyczyszczona!';
                 break;
             
             case 'clear_cache':
                 // Czyszczenie cache
-                if (function_exists('wp_cache_flush')) {
-                    wp_cache_flush();
-                }
+                wpo_clear_all_cache();
                 $repair_message = '✅ Cache wyczyszczony!';
                 break;
             
@@ -369,22 +365,19 @@ function wpo_render_repair_page() {
             
             case 'remove_orphaned':
                 // Usuwanie sierocych postmeta
-                global $wpdb;
-                $deleted = $wpdb->query(
-                    "DELETE FROM {$wpdb->postmeta} WHERE post_id NOT IN (SELECT ID FROM {$wpdb->posts})"
-                );
-                $repair_message = "✅ Usunięto $deleted sierocych wpisów!";
+                $deleted = wpo_remove_orphaned_postmeta();
+                $repair_message = sprintf('✅ Usunięto %d sierocych wpisów!', $deleted);
                 break;
         }
     }
 
-    $db_size = wpo_get_db_size();
+    $db_stats = wpo_get_database_stats();
     $wp_errors = wpo_get_debug_errors();
     ?>
     <div class="wrap">
         <h1>🔧 Naprawa Strony</h1>
         
-        <?php if ($repair_message) echo "<div class='notice notice-success'><p>$repair_message</p></div>"; ?>
+        <?php if ($repair_message) echo "<div class='notice notice-success'><p>" . wp_kses_post($repair_message) . "</p></div>"; ?>
         
         <div style="background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
             <h2>🩺 Diagnostyka</h2>
@@ -399,8 +392,8 @@ function wpo_render_repair_page() {
                 <tbody>
                     <tr>
                         <td>📊 Rozmiar bazy danych</td>
-                        <td><?php echo esc_html($db_size); ?></td>
-                        <td><?php echo $db_size > '100MB' ? '⚠️ Duża' : '✅ OK'; ?></td>
+                        <td><?php echo esc_html($db_stats['size_mb'] ?? 'N/A') . ' MB'; ?></td>
+                        <td><?php echo ($db_stats['size_mb'] ?? 0) > 100 ? '⚠️ Duża' : '✅ OK'; ?></td>
                     </tr>
                     <tr>
                         <td>🚨 Błędy debugowania</td>
@@ -409,12 +402,12 @@ function wpo_render_repair_page() {
                     </tr>
                     <tr>
                         <td>📝 Wersja WordPress</td>
-                        <td><?php echo get_bloginfo('version'); ?></td>
-                        <td>✅ <?php echo get_bloginfo('version'); ?></td>
+                        <td><?php echo esc_html(get_bloginfo('version')); ?></td>
+                        <td>✅ <?php echo esc_html(get_bloginfo('version')); ?></td>
                     </tr>
                     <tr>
                         <td>⚙️ Wersja PHP</td>
-                        <td><?php echo phpversion(); ?></td>
+                        <td><?php echo esc_html(phpversion()); ?></td>
                         <td><?php echo version_compare(phpversion(), '7.4') >= 0 ? '✅ OK' : '❌ Za stara'; ?></td>
                     </tr>
                 </tbody>
@@ -447,9 +440,8 @@ function wpo_render_repair_page() {
 
 // Funkcje pomocnicze
 function wpo_get_db_size() {
-    global $wpdb;
-    $size = $wpdb->get_var("SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) FROM information_schema.tables WHERE table_schema = '" . DB_NAME . "'");
-    return $size . ' MB';
+    $stats = wpo_get_database_stats();
+    return ($stats['size_mb'] ?? 0) . ' MB';
 }
 
 function wpo_get_debug_errors() {
@@ -509,7 +501,7 @@ add_action('send_headers', 'wpo_add_cache_headers');
 function wpo_add_cache_headers() {
     if (!is_admin()) {
         $cache_time = get_option('wpo_cache_time', 3600);
-        header('Cache-Control: public, max-age=' . $cache_time);
+        header('Cache-Control: public, max-age=' . intval($cache_time));
         header('X-Content-Type-Options: nosniff');
         header('X-Frame-Options: SAMEORIGIN');
     }
@@ -545,7 +537,7 @@ function wpo_add_schema_org() {
         'description' => get_bloginfo('description'),
         'url' => get_site_url(),
     ];
-    echo '<script type="application/ld+json">' . json_encode($schema) . '</script>' . "\n";
+    echo '<script type="application/ld+json">' . wp_json_encode($schema) . '</script>' . "\n";
 }
 
 // Hook aktywacji
@@ -568,5 +560,9 @@ function wpo_deactivation() {
     delete_option('wpo_lazy_loading');
     delete_option('wpo_defer_js');
     delete_option('wpo_cache_time');
+    
+    // Usuń zaplanowane eventy
+    wp_clear_scheduled_hook('wpo_weekly_cleanup');
+    wp_clear_scheduled_hook('wpo_process_ai_optimization');
 }
 ?>
